@@ -16,10 +16,10 @@ bağlanamadığı için bu sidecar Windows'ta ayrı bir süreç olarak çalış�
 
 | Faz  | İş                                                             | Durum        |
 |------|----------------------------------------------------------------|--------------|
-| 3    | Skeleton (endpoint stub'ları + MockPosDevice)                  | ✅ Bu tur    |
-| 3.5  | IntegrationHub.dll wrap (BekoTokenPosDevice) — Windows only    | ⏳ Sonraki   |
-| 4    | Installer bundling (Tauri config + MSI/NSIS prerequisites)     | ⏳           |
-| 5    | ESEN Windows PC'de fiziksel test (X30TR + 300TR)               | ⏳           |
+| 3    | Skeleton (endpoint stub'ları + MockPosDevice)                  | ✅           |
+| 3.5  | IntegrationHub.dll wrap (BekoTokenPosDevice) — Windows only    | ✅ Bu tur    |
+| 4    | ESEN Windows PC kurulumu (bkz. **[INSTALL.md](INSTALL.md)**)   | ⏳ Sen       |
+| 5    | Fiziksel test (X30TR + 300TR) + VERA installer bundling        | ⏳           |
 
 ## Endpoint Kontratı
 

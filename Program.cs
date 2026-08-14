@@ -56,9 +56,24 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
 
-// Servisler — mock cihaz (Faz 3.5'te gerçek BekoTokenPosDevice ile değişir)
+// Servisler
 builder.Services.AddSingleton<OlayYayici>();
-builder.Services.AddSingleton<IPosDevice, MockPosDevice>();
+
+// Cihaz sürücüsü: Windows'ta gerçek IntegrationHub.dll wrap, aksi hâlde mock.
+// Ortam değişkeni BEKO_MOCK=1 ile Windows'ta da mock zorlanabilir (dev/CI).
+var mockZorunlu = string.Equals(builder.Configuration["BEKO_MOCK"], "1", StringComparison.Ordinal)
+                || string.Equals(Environment.GetEnvironmentVariable("BEKO_MOCK"), "1", StringComparison.Ordinal);
+
+if (OperatingSystem.IsWindows() && !mockZorunlu)
+{
+    builder.Services.AddSingleton<IPosDevice, BekoTokenPosDevice>();
+    Console.WriteLine("[bridge] Cihaz sürücüsü: BEKO IntegrationHub (Windows)");
+}
+else
+{
+    builder.Services.AddSingleton<IPosDevice, MockPosDevice>();
+    Console.WriteLine($"[bridge] Cihaz sürücüsü: MOCK ({(OperatingSystem.IsWindows() ? "BEKO_MOCK=1" : "Windows dışı")})");
+}
 
 var app = builder.Build();
 
@@ -206,7 +221,6 @@ app.MapGet("/", () => Results.Text(
     "Kontrat: project_beko_bridge_endpoint_kontrati (VERA memory)"));
 
 Console.WriteLine($"[bridge] vera-beko-bridge {bridgeVer} başladı: http://127.0.0.1:{port}");
-Console.WriteLine($"[bridge] Mod: {(builder.Services.Any(s => s.ImplementationType == typeof(MockPosDevice)) ? "MOCK" : "GERÇEK")}");
 Console.WriteLine($"[bridge] Secret: {(string.IsNullOrEmpty(secret) ? "AYARLANMAMIŞ (dev only)" : "***")}");
 
 app.Run();

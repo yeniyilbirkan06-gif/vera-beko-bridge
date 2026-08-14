@@ -1,16 +1,43 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- IntegrationHub.dll .NET Framework 4.5.2 x86 → Windows-only target -->
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>VeraBekoBridge</RootNamespace>
     <AssemblyName>vera-beko-bridge</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <!-- Windows self-contained publish için README'ye bkz. -->
     <PublishSingleFile Condition="'$(PublishSingleFile)' == ''">false</PublishSingleFile>
     <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- WinForms/WPF referansı gerekmiyor - sadece Windows OS bilgisi için -->
+    <UseWindowsForms>false</UseWindowsForms>
+    <UseWPF>false</UseWPF>
+    <!-- DLL x86 tabanlı — publish -r win-x86 ile çakışan warning'i sustur -->
+    <PlatformTarget>x86</PlatformTarget>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- tokenx-referans/ SADECE okuma kaynağı — build'e girmesin -->
+    <Compile Remove="tokenx-referans/**" />
+    <Content Remove="tokenx-referans/**" />
+    <None Remove="tokenx-referans/**" />
+    <EmbeddedResource Remove="tokenx-referans/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- BEKO/TOKEN IntegrationHub kütüphanesi (x86 .NET Framework 4.5.2) -->
+    <Reference Include="IntegrationHub">
+      <HintPath>lib\IntegrationHub.dll</HintPath>
+      <SpecificVersion>False</SpecificVersion>
+      <Private>true</Private>
+    </Reference>
+    <!-- IntegrationHub'ın kendi Newtonsoft.Json bağımlılığı (13.0.3) -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- .NET Framework 4.5.2 DLL'i .NET 10 üzerinde shim ile çalıştır -->
+    <PackageReference Include="Microsoft.Windows.Compatibility" Version="9.0.0" />
+  </ItemGroup>
 
 </Project>

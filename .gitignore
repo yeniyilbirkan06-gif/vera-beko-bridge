@@ -6,3 +6,5 @@ publish/
 .vs/
 .vscode/
 appsettings.Local.json
+.DS_Store
+*.zip
