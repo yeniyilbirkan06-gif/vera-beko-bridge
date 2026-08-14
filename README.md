@@ -77,25 +77,33 @@ curl "http://127.0.0.1:38701/events?secret=dev-mock-secret-degistir"
 
 ## Windows Build (self-contained)
 
+**ÖNEMLİ:** `lib/IntegrationHub.dll` **x86** (32-bit) — sidecar da **x86** publish edilmeli:
+
 ```bash
-dotnet publish -c Release -r win-x64 --self-contained true \
+dotnet publish -c Release -r win-x86 --self-contained true \
   /p:PublishSingleFile=true /p:PublishTrimmed=false \
-  -o ./publish/win-x64
+  -o ./publish/win-x86
 ```
 
-Çıktı: `publish/win-x64/vera-beko-bridge.exe` (~60-80 MB, .NET runtime dahil).
+Çıktı: `publish/win-x86/vera-beko-bridge.exe` (~60-80 MB, .NET runtime dahil).
+DLL'in modern .NET 10'da yüklenmesi için csproj'a `Microsoft.Windows.Compatibility`
+NuGet paketi ve `<UseWindowsForms>false</UseWindowsForms>` gerekebilir (Faz 3.5'te doğrulanır).
 
-## Faz 3.5 — IntegrationHub.dll Entegrasyonu (TODO)
+## Faz 3.5 — IntegrationHub.dll Entegrasyonu
 
-1. TokenX'in referans template'i klonla: `git clone https://github.com/TokenPublication/hizlisepet-clienttemplate`
-2. IntegrationHub.dll'i cihaz sürücüsü sihirbazından al (bkz. developer.tokeninc.com)
-3. `PosDevice.cs`'te `BekoTokenPosDevice : IPosDevice` yaz:
-   - `POSCommunication.getInstance("VERA")`
-   - `setDeviceStateCallback` → OlayYayici → SSE
-   - `setSerialInCallback` → tip 1/3/9/10 → SSE event isimleri
-   - `sendBasket(basketID, jsonString)` → BasketIstek serialization (kuruş+×1000)
-4. `Program.cs`'te `AddSingleton<IPosDevice, BekoTokenPosDevice>()` (mock yerine)
-5. VC++ Redist prerequisite installer + zadig-x30tr driver kurulum sihirbazı
+**Hazırlıklar tamamlandı:**
+- ✅ `lib/IntegrationHub.dll` (8MB, TokenPublication template'inden — commit'li)
+- ✅ `lib/Newtonsoft.Json.dll` (bağımlılık)
+- ✅ `tokenx-referans/` — Form1.cs + Basket.cs + FiscalInfo.cs vb. örnek kodlar
+- ✅ `tokenx-referans/NOTLAR.md` — API özeti + Faz 3.5 skeleton örnekleri
+
+**Yapılacaklar (Windows PC'de):**
+1. `csproj` düzenle: `<TargetFramework>net10.0-windows</TargetFramework>` + `Microsoft.Windows.Compatibility` NuGet + `<Reference Include="IntegrationHub"><HintPath>lib\IntegrationHub.dll</HintPath></Reference>`
+2. `BekoTokenPosDevice.cs` yaz — `tokenx-referans/NOTLAR.md` skeleton'ını kullan
+3. `Program.cs`'te `OperatingSystem.IsWindows()` kontrolüyle mock/gerçek seç
+4. `dotnet publish -r win-x86 --self-contained` → çıktıyı ESEN PC'sine kopyala
+5. VC++ Redist + TokenX Connect (Wired) v2.9.3 sürücü kurulumu
+6. X30TR/300TR takılı → gerçek sepet testi
 
 ## Yapılandırma
 
