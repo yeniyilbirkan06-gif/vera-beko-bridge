@@ -1,0 +1,8 @@
+bin/
+obj/
+out/
+publish/
+*.user
+.vs/
+.vscode/
+appsettings.Local.json
