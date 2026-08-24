@@ -8,10 +8,16 @@
 //
 // Faz 3 (bugün): Mock cihaz. Windows'ta gerçek IntegrationHub.dll wrap Faz 3.5.
 
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http.Features;
 using VeraBekoBridge;
+
+// Windows console default CP1254 → Türkçe log'da 'YİYECEK' → 'Y¦YECEK'.
+// Payload'da (DLL'e giden string) etki YOK (UTF-16), ama debug'ı zehirliyor.
+// Bu satırın en başta olması ŞART — sonraki tüm Console.WriteLine çıktıları UTF-8.
+Console.OutputEncoding = System.Text.Encoding.UTF8;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,7 +29,17 @@ var secret  = builder.Configuration["Bridge:Secret"] ?? "";
 
 if (string.IsNullOrWhiteSpace(secret))
 {
-    Console.WriteLine("[bridge] UYARI: Bridge:Secret ayarlanmamış — bridge güvensiz modda çalışıyor (dev only).");
+    // Production'da secret zorunlu — bridge'e sadece VERA erişebilsin (aynı PC'de
+    // başka bir process localhost'a HTTP atarsa 401 alsın). Development'ta hata
+    // ayıklama kolaylığı için sadece uyarı.
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "Bridge:Secret production'da ZORUNLU. appsettings.json içindeki 'Secret' " +
+            "alanına 32 karakter rastgele değer yazın. VERA installer bu değeri otomatik " +
+            "üretip hem VERA ayarlarına hem appsettings.json'a yazacak (Faz 5).");
+    }
+    Console.WriteLine("[bridge] UYARI: Bridge:Secret ayarlanmamış — DEV mode only.");
 }
 
 // Sadece localhost'a bind — dış erişim engelli
@@ -103,13 +119,10 @@ app.Use(async (ctx, next) =>
         return;
     }
 
-    // Health kontrol için secret opsiyonel — VERA sağlık check'i uzaktan yapabilsin
-    if (yol.Equals("/health", StringComparison.Ordinal))
-    {
-        await next();
-        return;
-    }
-
+    // Health dahil TÜM endpoint secret gerektirir. Eski bypass VERA secret bug'ını
+    // maskeleyip false-positive "sağlık OK" gösteriyordu (ESEN teşhisi zorlaştı).
+    // Localhost bind + secret kombinasyonu defense-in-depth: aynı PC'deki başka
+    // proses (browser, malware) bridge'e istek atsa 401 alsın.
     var headerSecret = ctx.Request.Headers["X-Bridge-Secret"].ToString();
     if (!string.IsNullOrEmpty(secret) && headerSecret != secret)
     {
@@ -147,13 +160,43 @@ app.MapPost("/fiscal-info/refresh", async (IPosDevice cihaz, CancellationToken c
 app.MapPost("/kdv-push", async (KdvPushIstek istek, IPosDevice cihaz, CancellationToken ct) =>
     Results.Ok(await cihaz.PushKdvAsync(istek.Kisimlar, ct)));
 
+// /basket idempotency cache — VERA retry ederse (network hatası, timeout) aynı
+// basketID ile 2. POST cihaza gitmemeli, cached yanıtı dön (kontrat gereği).
+// TTL 30 sn: normal bir sepet-tamamlama akışı için yeterli, sonra evict edilir.
+var basketCache = new ConcurrentDictionary<string, (DateTime Ts, BasketYanit Yanit)>();
+
 app.MapPost("/basket", async (BasketIstek sepet, IPosDevice cihaz, CancellationToken ct) =>
 {
     if (string.IsNullOrWhiteSpace(sepet.BasketID))
         return Results.BadRequest(new HataYanit(new HataDetay("SEPET_ID_YOK", "basketID zorunlu")));
     if (sepet.Items is null || sepet.Items.Length == 0)
         return Results.BadRequest(new HataYanit(new HataDetay("KALEM_YOK", "En az bir item olmalı")));
+
+    // Idempotency check
+    if (basketCache.TryGetValue(sepet.BasketID, out var cached))
+    {
+        if (DateTime.UtcNow - cached.Ts < TimeSpan.FromSeconds(30))
+        {
+            Console.WriteLine($"[bridge] /basket idempotency-hit basketID={sepet.BasketID}");
+            return Results.Ok(cached.Yanit);
+        }
+        basketCache.TryRemove(sepet.BasketID, out _);
+    }
+
     var y = await cihaz.SendBasketAsync(sepet, ct);
+    basketCache[sepet.BasketID] = (DateTime.UtcNow, y);
+
+    // Cache temizlik — 60 sn'den eski girdileri sil (fire-and-forget)
+    if (basketCache.Count > 100)
+    {
+        _ = Task.Run(() =>
+        {
+            var cutoff = DateTime.UtcNow - TimeSpan.FromSeconds(60);
+            foreach (var kv in basketCache)
+                if (kv.Value.Ts < cutoff) basketCache.TryRemove(kv.Key, out _);
+        });
+    }
+
     return Results.Ok(y);
 });
 

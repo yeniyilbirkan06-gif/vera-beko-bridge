@@ -256,16 +256,45 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
         }
     }
 
-    public Task<BasitBasariYanit> PushKdvAsync(KisimDto[] kisimlar, CancellationToken ct)
+    public async Task<BasitBasariYanit> PushKdvAsync(KisimDto[] kisimlar, CancellationToken ct)
     {
-        // NOT: IntegrationHub'ın public API'sinde doğrudan "KDV/section push" yok.
-        // Cihazdaki kısımlar TokenX yönetim aracıyla önceden yapılandırılır ve
-        // getFiscalInfo ile okunur. Bu endpoint şimdilik sadece cihazdakileri
-        // doğrular (fiscalInfo'dan çekip VERA'nın önerdiği tabloyla eşleşiyor mu).
-        // Faz 5'te fiziksel testte gerçek push desteği tespit edilirse buraya
-        // eklenir; şu an "başarılı" ile döner ve log'a not düşer.
-        _log.LogInformation("[beko] KDV push çağrıldı — cihaz kısımları önceden yapılandırılmış olmalı. Öneri: {n} kısım", kisimlar.Length);
-        return Task.FromResult(new BasitBasariYanit(true));
+        // IntegrationHub public API'sinde doğrudan "section push" yok. Cihazdaki
+        // kısımlar TokenX Yönetim Aracı + mali PIN ile bayı tarafından yüklenir.
+        // Bu endpoint doğrulama görevi görür: cihazdakileri getFiscalInfo ile
+        // çeker + VERA'nın önerdiği tabloyla diff'i log'a yazar.
+        // (VERA UI'da bu buton disable edildi + tooltip eklendi — bkz. BekoAyarlari.tsx)
+        var mevcut = await RefreshFiscalInfoAsync(ct);
+        if (!mevcut.Basarili || mevcut.Kisimlar is null)
+        {
+            _log.LogWarning("[beko] KDV push doğrulama: cihaz fiscal info alınamadı");
+            return new BasitBasariYanit(false);
+        }
+
+        var mevcutMap = mevcut.Kisimlar.ToDictionary(k => k.No, k => k);
+        var uyumsuzluk = new List<string>();
+        foreach (var onerilen in kisimlar)
+        {
+            if (!mevcutMap.TryGetValue(onerilen.No, out var m))
+            {
+                uyumsuzluk.Add($"section {onerilen.No}={onerilen.Ad} cihazda YOK");
+            }
+            else if (m.Kdv != onerilen.Kdv * 100 && m.Kdv != onerilen.Kdv)
+            {
+                // Cihaz taxRate genelde ×100 (KDV %10 → 1000). VERA tarafında yüzde.
+                uyumsuzluk.Add($"section {onerilen.No}: cihaz KDV={m.Kdv}, VERA={onerilen.Kdv}%");
+            }
+        }
+
+        if (uyumsuzluk.Count == 0)
+        {
+            _log.LogInformation("[beko] KDV push doğrulama BAŞARILI — {n} kısım cihazda beklenen konfigürasyonda", kisimlar.Length);
+        }
+        else
+        {
+            _log.LogWarning("[beko] KDV push doğrulama UYUMSUZ ({n} fark): {list}",
+                uyumsuzluk.Count, string.Join(" | ", uyumsuzluk));
+        }
+        return new BasitBasariYanit(true);  // Kontrat: her zaman true (VERA UI zaten disable)
     }
 
     public Task<BasketYanit> SendBasketAsync(BasketIstek s, CancellationToken ct)
@@ -291,9 +320,12 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
     {
         try
         {
-            // Form1.cs pattern: isVoid=true payment gönderilir
+            // IntegrationHub pattern: isVoid=true payment gönderilir (Form1.cs).
+            // NOT: Bu fire-and-forget — cihaz gerçekten iptal ettiğinde SSE
+            // `sepet-durum` event'i ile bildirir. Kontrat gereği Basarili=komut
+            // gönderildi, IptalEdildi=cihaz kabul etti anlamında.
             _com.sendPayment("{\"isVoid\": true}");
-            _log.LogInformation("[beko] asılı fiş iptal (isVoid) gönderildi");
+            _log.LogInformation("[beko] iptal komutu gönderildi (sepet-durum SSE onayı bekle)");
             return Task.FromResult(new BasketCancelYanit(true, true));
         }
         catch (Exception ex)
@@ -352,26 +384,38 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
     {
         // VERA zaten kuruş+×1000 gönderiyor (beko-api.ts bekoSepetiSerializeEt).
         // Burada sadece alan isimleri TokenX'in beklediği şekle dönüştürülüyor.
+        // int32 sınırı: ~21M kuruş = 214.748 TL. Bir sepetin taxFreeAmount veya
+        // tek kalem tutarı bu sınırı aşarsa TokenX int32 alanı taşar — throw et,
+        // sessizce bozuk gönderim yapma.
+        long IntSafe(long v, string alan)
+        {
+            if (v < int.MinValue || v > int.MaxValue)
+                throw new OverflowException(
+                    $"BEKO alan '{alan}' değeri {v} kuruş (~{v / 100} TL) int32 sınırını aşıyor. " +
+                    "Tek sepette bu kadar büyük satış cihazın da kabul etmediği bir senaryo.");
+            return v;
+        }
+
         return new
         {
             basketID       = s.BasketID,
             createInvoice  = false,                    // HARD-CODED — cihaz e-Arşiv basmasın
             documentType   = s.DocumentType ?? 0,
-            taxFreeAmount  = (int)s.TaxFreeAmount,
+            taxFreeAmount  = (int)IntSafe(s.TaxFreeAmount, "taxFreeAmount"),
             isVoid         = s.IsVoid,
             items          = s.Items.Select(i => new
             {
                 barcode     = i.Barcode,
                 name        = i.Name,
                 pluNo       = 0,
-                price       = (int)i.Amount,          // toplam kuruş
+                price       = (int)IntSafe(i.Amount, $"items[{i.Barcode}].price"),  // toplam kuruş
                 sectionNo   = i.Section,
                 taxPercent  = i.TaxRate,
                 type        = 0,
                 unit        = "AD",
                 vatID       = i.Section,               // section=vatID varsayımı
                 limit       = 0,
-                quantity    = (int)i.Quantity,        // ×1000
+                quantity    = (int)IntSafe(i.Quantity, $"items[{i.Barcode}].quantity"),  // ×1000
                 paymentType = 0,
             }).ToArray(),
             customerInfo   = s.CustomerInfo == null ? null : new
@@ -383,7 +427,7 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
             paymentItems   = s.PaymentItems.Select(p => new
             {
                 description = OdemeAciklamasi(p.Type),
-                amount      = (int)p.Amount,
+                amount      = (int)IntSafe(p.Amount, $"paymentItems[type={p.Type}].amount"),
                 type        = p.Type,
             }).ToArray(),
             adjust         = s.Adjust == null ? null : new
@@ -391,7 +435,7 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
                 description        = s.Adjust.Type,
                 discountOrSurcharge = 0,                // 0=indirim, 1=artış (TokenX)
                 type               = 0,                 // 0=tutar, 1=yüzde
-                value              = (int)s.Adjust.Amount,
+                value              = (int)IntSafe(s.Adjust.Amount, "adjust.value"),
             },
         };
     }
