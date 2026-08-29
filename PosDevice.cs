@@ -37,6 +37,13 @@ public interface IPosDevice
     /// <summary>Bağlı cihazları listele (şimdilik tek cihaz senaryosu).</summary>
     Task<CihazListYanit> ListDevicesAsync(CancellationToken ct);
 
+    /// <summary>
+    /// Kesilmiş bağlantıyı yeniden kur — TokenX v2.0.1 `reConnect()`.
+    /// Kablo yeniden takıldığında SDK otomatik reconnect eder ama garanti yok.
+    /// VERA sağlık check'i cihaz bağlı değil dönüşünde çağırabilir.
+    /// </summary>
+    Task<BasitBasariYanit> ReConnectAsync(CancellationToken ct);
+
     /// <summary>DLL sürümü (health endpoint için).</summary>
     string? DllSurumu { get; }
 }
@@ -150,7 +157,8 @@ public sealed class MockPosDevice : IPosDevice
                 BasketID: sepet.BasketID,
                 FisNo:    "MOCK-" + DateTime.UtcNow.ToString("HHmmss"),
                 ZNo:      1,
-                Uuid:     Guid.NewGuid().ToString()));
+                Uuid:     Guid.NewGuid().ToString(),
+                Status:   0));
         });
         return Task.FromResult(new BasketYanit(true, sepet.BasketID));
     }
@@ -159,6 +167,9 @@ public sealed class MockPosDevice : IPosDevice
         => Task.FromResult(new BasketCancelYanit(true, true));
 
     public Task<BasitBasariYanit> SendPaymentAsync(PaymentIstek istek, CancellationToken ct)
+        => Task.FromResult(new BasitBasariYanit(true));
+
+    public Task<BasitBasariYanit> ReConnectAsync(CancellationToken ct)
         => Task.FromResult(new BasitBasariYanit(true));
 
     public Task<CihazListYanit> ListDevicesAsync(CancellationToken ct)

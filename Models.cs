@@ -90,6 +90,10 @@ public static class OlayTipleri
 }
 
 public sealed record SepetDurumOlay(string BasketID, string Asama);
-public sealed record SatisBilgisiOlay(string BasketID, string? FisNo, int? ZNo, string? Uuid);
+/// <summary>
+/// Wire envanter §3: type=3 satış bilgisi payload'ı.
+/// Status: 0=başarılı, -1=iptal, 99=fiş iptali (envanter §3 BASKET_COMPLETED)
+/// </summary>
+public sealed record SatisBilgisiOlay(string BasketID, string? FisNo, int? ZNo, string? Uuid, int? Status);
 public sealed record CihazHatasiOlay(int Kod, string Mesaj);
 public sealed record OdemeYanitiOlay(string BasketID, bool Basarili, string? KartMaske, string? Mesaj);

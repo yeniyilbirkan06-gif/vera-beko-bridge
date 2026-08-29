@@ -11,7 +11,9 @@
 //   setDeviceStateCallback(Action<bool, string>)  — isConnected + fiscalId
 //   setSerialInCallback(Action<int, string>)       — tip 3=satış, tip 9=hata
 //   getFiscalInfo() → string JSON (sections + plus + kdv)
-//   sendBasket(string basketJson) → int (0=başarılı)
+//   sendBasket(string basketJson) → int (1=başarılı, 0=başarısız)
+//     Referans: TokenPublication template Form1.cs:294 `if (basketStatus == 1)`
+//     Wire envanter §2 [Sepet & Ödeme]. VERA <2026-08-29 tersine yazılıydı (BUG#30).
 //   sendPayment(string paymentJson) — sadece 300TR (getActiveDeviceIndex()==1)
 //   getActiveDeviceIndex() → 0=X30TR, 1=300TR
 //   reConnect(), deleteCommunication()
@@ -187,14 +189,19 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
         try
         {
             var o = JsonConvert.DeserializeObject<Dictionary<string, object?>>(json);
+            // Wire envanter §3 BASKET_COMPLETED: status 0=başarılı, -1=iptal, 99=fiş iptali.
+            // Bu alan olmayan durumlar (eski cihaz firmware'i vs) için null → VERA
+            // tarafında null=başarılı fallback (mevcut davranış).
             return new SatisBilgisiOlay(
                 BasketID: o?.GetValueOrDefault("basketID")?.ToString() ?? "",
                 FisNo:    o?.GetValueOrDefault("receiptNo")?.ToString()
                           ?? o?.GetValueOrDefault("fisNo")?.ToString(),
                 ZNo:      TryInt(o?.GetValueOrDefault("zNo")),
-                Uuid:     o?.GetValueOrDefault("uuid")?.ToString());
+                Uuid:     o?.GetValueOrDefault("uuid")?.ToString()
+                          ?? o?.GetValueOrDefault("UUID")?.ToString(),
+                Status:   TryInt(o?.GetValueOrDefault("status")));
         }
-        catch { return new SatisBilgisiOlay("", null, null, null); }
+        catch { return new SatisBilgisiOlay("", null, null, null, null); }
     }
 
     private static OdemeYanitiOlay ParseOdemeYaniti(string json)
@@ -301,13 +308,21 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
     {
         try
         {
+            // Wire envanter §1: "fiscal bilgi alınmadan satış yasak". DeviceState
+            // callback isConnected=true'da RefreshFiscalInfoAsync otomatik tetikleniyor
+            // ama sepet çağrısı bundan önce gelirse cihaz reject eder. Kısa devre:
+            if (!_fiscalInfoHazir)
+            {
+                _log.LogWarning("[beko] sendBasket engellendi — fiscal info hazır değil (cihaz henüz getFiscalInfo dönmedi)");
+                return Task.FromResult(new BasketYanit(false, s.BasketID));
+            }
             var tokenBasket = SepetiTokenXFormatinaCevir(s);
             var json = JsonConvert.SerializeObject(tokenBasket);
             _log.LogInformation("[beko] sendBasket basketID={id} items={n} payments={p}",
                 s.BasketID, s.Items.Length, s.PaymentItems.Length);
             int status = _com.sendBasket(json);
-            _log.LogInformation("[beko] sendBasket status={s}", status);
-            return Task.FromResult(new BasketYanit(status == 0, s.BasketID));
+            _log.LogInformation("[beko] sendBasket status={s} (1=başarılı, 0=başarısız)", status);
+            return Task.FromResult(new BasketYanit(status == 1, s.BasketID));
         }
         catch (Exception ex)
         {
@@ -361,6 +376,22 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
         }
     }
 
+    public Task<BasitBasariYanit> ReConnectAsync(CancellationToken ct)
+    {
+        try
+        {
+            _log.LogInformation("[beko] reConnect() çağrılıyor…");
+            _com.reConnect();
+            _log.LogInformation("[beko] reConnect() döndü — deviceState callback bekleniyor");
+            return Task.FromResult(new BasitBasariYanit(true));
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[beko] reConnect istisna");
+            return Task.FromResult(new BasitBasariYanit(false));
+        }
+    }
+
     public Task<CihazListYanit> ListDevicesAsync(CancellationToken ct)
     {
         try
@@ -408,9 +439,17 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
                 barcode     = i.Barcode,
                 name        = i.Name,
                 pluNo       = 0,
-                price       = (int)IntSafe(i.Amount, $"items[{i.Barcode}].price"),  // toplam kuruş
+                // Wire envanter §4 items[] (doküman esas):
+                //   price      = BİRİM fiyat kuruş (5 TL/adet → 500), toplam DEĞİL
+                //   taxPercent = KDV ×100 (%10 → 1000, %20 → 2000)
+                // <2026-08-29 sürümü BUG#18: price=Amount (toplam) + taxPercent=raw idi.
+                // ESEN'de fark edilmedi çünkü tek adetli test (Amount==Price).
+                // Prev audit "false positive" değerlendirmesi Basket.cs iç
+                // calculatePrice() hesabına dayanıyordu — cihazın price alanı
+                // semantiği ≠ template'in iç sepet-toplam formülü.
+                price       = (int)IntSafe(i.Price, $"items[{i.Barcode}].price"),   // birim kuruş
                 sectionNo   = i.Section,
-                taxPercent  = i.TaxRate,
+                taxPercent  = i.TaxRate * 100,        // %10=1000, %20=2000
                 type        = 0,
                 unit        = "AD",
                 vatID       = i.Section,               // section=vatID varsayımı

@@ -203,6 +203,11 @@ app.MapPost("/basket", async (BasketIstek sepet, IPosDevice cihaz, CancellationT
 app.MapPost("/basket/cancel", async (IPosDevice cihaz, CancellationToken ct) =>
     Results.Ok(await cihaz.CancelPendingBasketAsync(ct)));
 
+// TokenX v2.0.1 reConnect() — kablo çekilip takıldığında SDK otomatik reconnect
+// eder ama garanti yok; VERA sağlık check "cihaz bağlı değil" gördüğünde çağırır.
+app.MapPost("/reconnect", async (IPosDevice cihaz, CancellationToken ct) =>
+    Results.Ok(await cihaz.ReConnectAsync(ct)));
+
 app.MapPost("/payment", async (PaymentIstek istek, IPosDevice cihaz, CancellationToken ct) =>
     Results.Ok(await cihaz.SendPaymentAsync(istek, ct)));
 

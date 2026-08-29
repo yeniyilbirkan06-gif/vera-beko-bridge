@@ -32,6 +32,44 @@ Doğrulama: Denetim Masası → Programlar → "Microsoft Visual C++ 2015-2022 R
 
 **X30TR için özel not:** kurulumu yaparken cihaz ADB modu **kapalı** olmalı. Cihaz Ayarları → Geliştirici Seçenekleri → USB debugging → OFF.
 
+**X30TR sürücü sorunu?** TokenX Kurulum Aracı `libusbK` sürücüsünü yükler. Yükleyemezse alternatif:
+- **Zadig** (https://zadig.akeo.ie/) — yönetici çalıştır → Options → List All Devices → cihazı bul → sürücü listesinden **libusbK** seç → Replace Driver
+- **Manuel** — Aygıt Yöneticisi → cihaz sağ tık → Sürücüyü güncelleştir → Bilgisayarımda arama → "libusbK USB devices"
+
+**300TR sürücü sorunu?** TokenX aracı FTDI CDM yüklemezse:
+- FTDI resmî: https://ftdichip.com/wp-content/uploads/2021/08/CDM212364_Setup.zip
+
+---
+
+## ADIM 2.5 — USB Selective Suspend'i KAPAT (KRİTİK)
+
+⚠️ **Bu adım atlanırsa 3-4 saat POS'a satış yapılmadıktan sonra cihaz kilitlenir** (`libusb error [87]`) ve bridge restart lazım olur. Wire envanterinin "EN KRİTİK #1" sorunu — eczaneye özel çünkü satış yoğunluğu sabahtan öğleye kadar boş kalabilir.
+
+### Yol A — Powershell (yönetici) tek satır (önerilen)
+
+```powershell
+powercfg /SETACVALUEINDEX SCHEME_CURRENT SUB_USB USBSTATE 0
+powercfg /SETDCVALUEINDEX SCHEME_CURRENT SUB_USB USBSTATE 0
+powercfg /SETACTIVE SCHEME_CURRENT
+```
+
+### Yol B — Denetim Masası (manuel)
+
+1. Denetim Masası → Donanım ve Ses → Güç Seçenekleri
+2. Aktif planın yanındaki **"Plan ayarlarını değiştir"**
+3. **"Gelişmiş güç ayarlarını değiştir"**
+4. Listeden **USB ayarları → USB seçmeli askıya alma ayarı** → **Devre dışı**
+5. Uygula
+
+### Ek adım — Aygıt Yöneticisi
+
+1. Aygıt Yöneticisi → **Evrensel Seri Veri Yolu denetleyicileri**
+2. Her **USB Root Hub** için sağ tık → Özellikler → **Güç Yönetimi** sekmesi
+3. **"Bilgisayar bu aygıtı kapatarak güç tasarrufu yapabilir"** kutusunu **KALDIR**
+4. Tüm hub'lar için tekrarla
+
+Doğrulama: `powercfg /Q SCHEME_CURRENT SUB_USB` → değer 0x00000000 olmalı.
+
 ---
 
 ## ADIM 3 — Cihaz(lar)ı USB'ye Tak
@@ -226,9 +264,20 @@ Aşağıda **BRIDGE DURUMU: BAĞLI · X30TR · AV...** rozeti görünmeli.
 - Cihaz ekranında **mali numara sarı kutuda** mı?
 - Aygıt Yöneticisi'nde sarı ünlem var mı? (varsa ADIM 2 sürücü kurulum sorunu)
 
-### "sendBasket status != 0" hatası
+### "sendBasket status != 1" hatası (1=başarılı, 0=başarısız)
 - Cihaz üzerinde başka bir işlem asılı olabilir → BekoAyarlari'nda **"Cihazdaki Asılı Fişi İptal Et"** bas
 - ADIM 7'de fiscal-info başarılı mı? Değilse cihaz henüz hazır değil
+- Cihaz "TokenX Connect Kablolu" ekranında mı? (X30TR) veya GMP3 → TOKENX CONNECT modunda mı? (300TR)
+
+### `libusb error [87]` veya `libusb: parametre hatalı`
+- Windows USB Selective Suspend cihazı uyuttu → **ADIM 2.5'i uygula** (kalıcı çözüm)
+- Anlık çözüm: kabloyu çekip tak, bridge restart
+- ADIM 2.5 uygulandığı halde tekrarlıyorsa: Aygıt Yöneticisi → USB Root Hub → Güç Yönetimi → tik kutuları kaldırıldı mı kontrol et
+
+### TokenX Connect app v8.0.0+ ise: "AppStore üyelik yok" gibi cihazda hata
+- Cihaz üzerinde satış reddediliyorsa TokenAppStore üyeliği aranıyor demektir
+- Çözüm: entegratörle iletişime geç (Token Finansal Teknolojiler destek) — eczane hesabınızı AppStore'a kaydettirin
+- Wire envanter §5: v8.0.0 breaking change, üyelik olmadan satış yapamaz
 
 ### VERA "BRIDGE ÇALIŞMIYOR" diyor
 - `Get-Process | Where-Object { $_.Name -like "vera-beko-bridge*" }` — çalışıyor mu?
