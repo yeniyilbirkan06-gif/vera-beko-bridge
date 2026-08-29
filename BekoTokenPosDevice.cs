@@ -240,7 +240,8 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
                 return Task.FromResult(new FiscalYanit(false));
             }
 
-            // FiscalInfo JSON: { sections: [{no,name,taxRate,...}], plus: [...] }
+            // FiscalInfo JSON: { sections: [{no,name,taxRate,...}], plus: [...],
+            //                    receiptLimit, eDocumentStatus }
             var o = JObject.Parse(json);
             var sections = o["sections"] as JArray;
             var kisimlar = sections?.Select(s => new KisimDto(
@@ -250,11 +251,28 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
 
             var kdvOranlari = kisimlar.Select(k => k.Kdv).Distinct().OrderBy(x => x).ToArray();
 
+            // Faz 6c — cihaz e-belge modu (VUK 593 rejimi).
+            // Portal §mimari-ve-is-akislari: eDocumentStatus=1 (aktif) ise cihaz
+            // kendi e-arşiv/e-fatura keser. Field yoksa false (Bilgi Fişi rejimi
+            // devam eder — mevcut Faz 6b davranışı).
+            var eDocumentAktif = (int?)o["eDocumentStatus"] == 1;
+            var receiptLimit = (long?)o["receiptLimit"];
+
             _fiscalInfoHazir = true;
-            _durum = _durum with { FiscalInfoHazir = true };
+            _durum = _durum with {
+                FiscalInfoHazir = true,
+                EDocumentAktif  = eDocumentAktif,
+                ReceiptLimit    = receiptLimit,
+            };
             _olay.Yayinla("cihaz-durum", _durum);
 
-            return Task.FromResult(new FiscalYanit(true, kdvOranlari, kisimlar));
+            _log.LogInformation(
+                "[beko] fiscal info: {n} kısım, e-belge modu={mod}, receipt limit={lim}",
+                kisimlar.Length,
+                eDocumentAktif ? "AKTİF (cihaz kendi e-belge keser)" : "PASİF (Bilgi Fişi)",
+                receiptLimit?.ToString() ?? "yok");
+
+            return Task.FromResult(new FiscalYanit(true, kdvOranlari, kisimlar, eDocumentAktif, receiptLimit));
         }
         catch (Exception ex)
         {

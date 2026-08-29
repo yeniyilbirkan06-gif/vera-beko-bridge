@@ -22,7 +22,16 @@ public sealed record CihazDurumu(
     string? ModelAd,
     string? SeriNo,
     string? MaliNo,
-    bool FiscalInfoHazir);
+    bool FiscalInfoHazir,
+    /// <summary>
+    /// Faz 6c — cihaz e-belge modunda mı (VUK 593 rejimi).
+    /// getFiscalInfo response'undan eDocumentStatus alanı parse edilir.
+    /// true: cihaz kendi e-arşiv/e-fatura keser → VERA Kolaysoft skip
+    /// false/null: mevcut Bilgi Fişi rejimi devam (Faz 6b)
+    /// </summary>
+    bool? EDocumentAktif = null,
+    /// <summary>Fatura düzenleme limiti (kuruş) — VUK 593. Üstü e-belge zorunlu.</summary>
+    long? ReceiptLimit = null);
 
 public sealed record HealthYanit(
     bool Hazir,
@@ -36,7 +45,9 @@ public sealed record HealthYanit(
 public sealed record FiscalYanit(
     bool Basarili,
     int[]? KdvOranlari = null,
-    KisimDto[]? Kisimlar = null);
+    KisimDto[]? Kisimlar = null,
+    bool? EDocumentAktif = null,
+    long? ReceiptLimit = null);
 
 /* ─── KDV Push ─────────────────────────────────────────────── */
 public sealed record KisimDto(int No, string Ad, int Kdv);
