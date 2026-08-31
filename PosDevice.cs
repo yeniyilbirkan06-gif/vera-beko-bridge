@@ -28,11 +28,18 @@ public interface IPosDevice
     /// <summary>Sepeti cihaza gönderir. Sonuç SSE üzerinden gelir; bu çağrı sadece kabul.</summary>
     Task<BasketYanit> SendBasketAsync(BasketIstek sepet, CancellationToken ct);
 
-    /// <summary>Cihazdaki asılı/bekleyen sepeti iptal eder.</summary>
-    Task<BasketCancelYanit> CancelPendingBasketAsync(CancellationToken ct);
+    /// <summary>Cihazdaki asılı/bekleyen sepeti iptal eder.
+    /// X30TR için basketID zorunlu (sendBasket({isVoid:true}) çağrılır);
+    /// 300TR için basketID null olabilir (sendPayment({isVoid:true})). </summary>
+    Task<BasketCancelYanit> CancelPendingBasketAsync(string? basketID, CancellationToken ct);
 
     /// <summary>Kısmi ödeme (sadece 300TR). X30TR'de destek yok.</summary>
     Task<BasitBasariYanit> SendPaymentAsync(PaymentIstek istek, CancellationToken ct);
+
+    /// <summary>G2 — 300TR split-payment orchestration.
+    /// Bridge her ödemeyi sırayla gönderir + type=10 ACK bekler (30sn timeout).
+    /// Sepet için önce type=1 ACK beklenir (VERA sendBasket sonrası).</summary>
+    Task<SplitPaymentYanit> SplitPaymentAsync(SplitPaymentIstek istek, CancellationToken ct);
 
     /// <summary>Bağlı cihazları listele (şimdilik tek cihaz senaryosu).</summary>
     Task<CihazListYanit> ListDevicesAsync(CancellationToken ct);
@@ -163,11 +170,14 @@ public sealed class MockPosDevice : IPosDevice
         return Task.FromResult(new BasketYanit(true, sepet.BasketID));
     }
 
-    public Task<BasketCancelYanit> CancelPendingBasketAsync(CancellationToken ct)
+    public Task<BasketCancelYanit> CancelPendingBasketAsync(string? basketID, CancellationToken ct)
         => Task.FromResult(new BasketCancelYanit(true, true));
 
     public Task<BasitBasariYanit> SendPaymentAsync(PaymentIstek istek, CancellationToken ct)
         => Task.FromResult(new BasitBasariYanit(true));
+
+    public Task<SplitPaymentYanit> SplitPaymentAsync(SplitPaymentIstek istek, CancellationToken ct)
+        => Task.FromResult(new SplitPaymentYanit(true, istek.Payments.Length, null));
 
     public Task<BasitBasariYanit> ReConnectAsync(CancellationToken ct)
         => Task.FromResult(new BasitBasariYanit(true));

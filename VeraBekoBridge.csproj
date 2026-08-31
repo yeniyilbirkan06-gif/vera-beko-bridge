@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>VeraBekoBridge</RootNamespace>
     <AssemblyName>vera-beko-bridge</AssemblyName>
-    <Version>0.2.0</Version>
+    <Version>0.3.3</Version>
     <!-- Windows self-contained publish için README'ye bkz. -->
     <PublishSingleFile Condition="'$(PublishSingleFile)' == ''">false</PublishSingleFile>
     <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>

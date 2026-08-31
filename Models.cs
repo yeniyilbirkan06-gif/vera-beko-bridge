@@ -80,11 +80,19 @@ public sealed record BasketIstek(
     AdjustDto? Adjust,
     long TaxFreeAmount);
 
-public sealed record BasketYanit(bool Kabul, string BasketID);
+public sealed record BasketYanit(bool Kabul, string BasketID, string? Neden = null);
 public sealed record BasketCancelYanit(bool Basarili, bool IptalEdildi);
+/// <summary>Cancel body — X30TR path'i için basketID zorunlu. 300TR opsiyonel.</summary>
+public sealed record BasketCancelIstek(string? BasketID);
 
 /* ─── Payment (300TR için — kısmi ödeme) ───────────────────── */
 public sealed record PaymentIstek(string BasketID, int Type, long Amount);
+/// <summary>300TR split-payment orchestration (G2 audit).
+/// Bridge sırayla her ödemeyi gönderir + callback ACK bekler (type=10 status=0).
+/// Portal spec: sendBasket → type=1 status=0 → sendPayment → type=10 status=0 döngüsü.</summary>
+public sealed record SplitPaymentIstek(string BasketID, PaymentPart[] Payments);
+public sealed record PaymentPart(int Type, long Amount);
+public sealed record SplitPaymentYanit(bool Basarili, int TamamlananSayi, string? Hata);
 
 /* ─── Devices listesi ──────────────────────────────────────── */
 public sealed record CihazListItem(int Indeks, string Ad, string? SeriNo, bool Aktif);

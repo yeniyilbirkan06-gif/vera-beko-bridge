@@ -31,6 +31,7 @@
 // Kısım/Section numaraları getFiscalInfo cevabından öğrenilir; VERA
 // `kdv_orani` → sectionNo mapping'i bekoSepetiSerializeEt ile (beko-api.ts).
 
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using IntegrationHub;
@@ -47,6 +48,13 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
     private readonly ILogger<BekoTokenPosDevice> _log;
     private CihazDurumu _durum;
     private volatile bool _fiscalInfoHazir;
+
+    // G2 300TR split-payment orchestration (2026-08-31 portal audit).
+    // Portal spec: sendBasket → callback type=1 status=0 → sendPayment →
+    // callback type=10 status=0 döngüsü. Bridge basketID başına TCS tutar,
+    // callback bunları tetikler; SplitPaymentAsync sırayla bekler.
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _sepetAckBekleyenler = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<bool>> _odemeAckBekleyenler = new();
 
     public string? DllSurumu { get; }
 
@@ -145,7 +153,16 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
             switch (type)
             {
                 case OlayTipleri.SepetDurumu:  // 1
-                    _olay.Yayinla("sepet-durum", ParseSepetDurumu(value));
+                    var sepetDurum = ParseSepetDurumu(value);
+                    _olay.Yayinla("sepet-durum", sepetDurum);
+                    // G2 — split-payment orchestration için ACK sinyal.
+                    // Asama=="0" veya "onaylandi" → sepet hazır, sendPayment açık.
+                    if (!string.IsNullOrEmpty(sepetDurum.BasketID)
+                        && (sepetDurum.Asama == "0" || sepetDurum.Asama?.Contains("onay", StringComparison.OrdinalIgnoreCase) == true))
+                    {
+                        if (_sepetAckBekleyenler.TryRemove(sepetDurum.BasketID, out var tcs))
+                            tcs.TrySetResult(true);
+                    }
                     break;
 
                 case OlayTipleri.SatisBilgisi: // 3
@@ -155,10 +172,22 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
                 case OlayTipleri.CihazHatasi:  // 9
                     _olay.Yayinla("cihaz-hatasi", new CihazHatasiOlay(9,
                         "Sepet POS tarafından işlenemedi — POS uygulamasının açık olduğuna emin olun"));
+                    // G2 — hata → tüm bekleyen ACK'ları FAİL et.
+                    foreach (var kv in _sepetAckBekleyenler) kv.Value.TrySetResult(false);
+                    foreach (var kv in _odemeAckBekleyenler) kv.Value.TrySetResult(false);
+                    _sepetAckBekleyenler.Clear();
+                    _odemeAckBekleyenler.Clear();
                     break;
 
                 case OlayTipleri.OdemeYaniti:  // 10
-                    _olay.Yayinla("odeme-yaniti", ParseOdemeYaniti(value));
+                    var odemeYanit = ParseOdemeYaniti(value);
+                    _olay.Yayinla("odeme-yaniti", odemeYanit);
+                    // G2 — sendPayment ACK.
+                    if (!string.IsNullOrEmpty(odemeYanit.BasketID)
+                        && _odemeAckBekleyenler.TryRemove(odemeYanit.BasketID, out var otcs))
+                    {
+                        otcs.TrySetResult(odemeYanit.Basarili);
+                    }
                     break;
 
                 default:
@@ -229,15 +258,19 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
 
     public Task<CihazDurumu> GetCihazDurumuAsync(CancellationToken ct) => Task.FromResult(_durum);
 
-    public Task<FiscalYanit> RefreshFiscalInfoAsync(CancellationToken ct)
+    public async Task<FiscalYanit> RefreshFiscalInfoAsync(CancellationToken ct)
     {
         try
         {
-            var json = _com.getFiscalInfo();
+            // Portal not (developer.tokeninc.com Wire SDK): "getFiscalInfo executes
+            // synchronously and may block program execution". ASP.NET request thread'ini
+            // 5-10sn bloklamamak için Task.Run ile thread pool'a taşı.
+            // 2026-08-31 portal audit G4 fix.
+            var json = await Task.Run(() => _com.getFiscalInfo(), ct);
             if (string.IsNullOrWhiteSpace(json))
             {
                 _log.LogWarning("[beko] getFiscalInfo boş döndü");
-                return Task.FromResult(new FiscalYanit(false));
+                return new FiscalYanit(false);
             }
 
             // FiscalInfo JSON: { sections: [{sectionNo,name,taxPercent,...}], plus: [...],
@@ -286,12 +319,12 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
                 eDocumentAktif ? "AKTİF (cihaz kendi e-belge keser)" : "PASİF (Bilgi Fişi)",
                 receiptLimit?.ToString() ?? "yok");
 
-            return Task.FromResult(new FiscalYanit(true, kdvOranlari, kisimlar, eDocumentAktif, receiptLimit));
+            return new FiscalYanit(true, kdvOranlari, kisimlar, eDocumentAktif, receiptLimit);
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "[beko] getFiscalInfo istisna");
-            return Task.FromResult(new FiscalYanit(false));
+            return new FiscalYanit(false);
         }
     }
 
@@ -355,25 +388,55 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
                 s.BasketID, s.Items.Length, s.PaymentItems.Length);
             int status = _com.sendBasket(json);
             _log.LogInformation("[beko] sendBasket status={s} (1=başarılı, 0=başarısız)", status);
-            return Task.FromResult(new BasketYanit(status == 1, s.BasketID));
+            if (status == 1) return Task.FromResult(new BasketYanit(true, s.BasketID));
+            // Portal spec (G3 audit) — v8.0.0+ TokenX Connect uygulaması AppStore
+            // aktivasyonu yoksa satışı reddeder. sendBasket==0 en olası sebepleri:
+            // (a) AppStore üyeliği aktif değil, (b) cihaz TokenX Connect ekranında
+            // değil (satış app'i açık değil), (c) fiscal state bozulmuş.
+            var neden = "Cihaz sepeti reddetti — olası sebepler: AppStore aktivasyonu yok, cihaz satış ekranında değil, veya fiscal state bozuk. Cihazı kontrol edin.";
+            _log.LogWarning("[beko] sendBasket reddedildi: {n}", neden);
+            return Task.FromResult(new BasketYanit(false, s.BasketID, neden));
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "[beko] sendBasket istisna basketID={id}", s.BasketID);
-            return Task.FromResult(new BasketYanit(false, s.BasketID));
+            return Task.FromResult(new BasketYanit(false, s.BasketID, ex.Message));
         }
     }
 
-    public Task<BasketCancelYanit> CancelPendingBasketAsync(CancellationToken ct)
+    public Task<BasketCancelYanit> CancelPendingBasketAsync(string? basketID, CancellationToken ct)
     {
         try
         {
-            // IntegrationHub pattern: isVoid=true payment gönderilir (Form1.cs).
-            // NOT: Bu fire-and-forget — cihaz gerçekten iptal ettiğinde SSE
-            // `sepet-durum` event'i ile bildirir. Kontrat gereği Basarili=komut
-            // gönderildi, IptalEdildi=cihaz kabul etti anlamında.
-            _com.sendPayment("{\"isVoid\": true}");
-            _log.LogInformation("[beko] iptal komutu gönderildi (sepet-durum SSE onayı bekle)");
+            // Portal spec (developer.tokeninc.com):
+            //   - `sendPayment({"isVoid":true})` **sadece 300TR** için documented.
+            //   - X30TR için iptal `sendBasket({basketID, isVoid:true})` ile yapılır.
+            // 2026-08-31 portal audit (G1 blocker) — model bazlı branch.
+            int idx = _com.getActiveDeviceIndex();
+            if (idx == 1) // 300TR
+            {
+                _com.sendPayment("{\"isVoid\": true}");
+                _log.LogInformation("[beko] 300TR iptal (sendPayment isVoid), sepet-durum SSE onayı bekle");
+            }
+            else // 0=X30TR veya bilinmeyen — default X30TR path
+            {
+                if (string.IsNullOrWhiteSpace(basketID))
+                {
+                    _log.LogWarning("[beko] X30TR iptal için basketID zorunlu — atlandı");
+                    return Task.FromResult(new BasketCancelYanit(false, false));
+                }
+                var iptalJson = JsonConvert.SerializeObject(new
+                {
+                    basketID,
+                    isVoid = true,
+                });
+                int status = _com.sendBasket(iptalJson);
+                _log.LogInformation("[beko] X30TR iptal (sendBasket isVoid) status={s} basketID={id}", status, basketID);
+                if (status != 1)
+                {
+                    return Task.FromResult(new BasketCancelYanit(false, false));
+                }
+            }
             return Task.FromResult(new BasketCancelYanit(true, true));
         }
         catch (Exception ex)
@@ -407,6 +470,50 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
             _log.LogError(ex, "[beko] sendPayment istisna");
             return Task.FromResult(new BasitBasariYanit(false));
         }
+    }
+
+    /// <summary>G2 — 300TR split-payment orchestration.
+    /// Bridge sıralı: (1) sepet ACK bekle (VERA sendBasket sonrası, type=1 status=0)
+    /// (2) sendPayment(part1) → type=10 ACK bekle (3) devam. 30sn timeout her adımda.
+    /// VERA aynı basketID ile önce /basket POST edip sonra /payment/split çağırır.</summary>
+    public async Task<SplitPaymentYanit> SplitPaymentAsync(SplitPaymentIstek istek, CancellationToken ct)
+    {
+        if (_com.getActiveDeviceIndex() != 1)
+        {
+            return new SplitPaymentYanit(false, 0, "Split-payment sadece 300TR (idx=1) için");
+        }
+        // 1. Sepet ACK bekle (sendBasket VERA tarafında çağrılmış olmalı önceden).
+        var sepetTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _sepetAckBekleyenler[istek.BasketID] = sepetTcs;
+        var sepetAck = await Task.WhenAny(sepetTcs.Task, Task.Delay(30_000, ct));
+        _sepetAckBekleyenler.TryRemove(istek.BasketID, out _);
+        if (sepetAck != sepetTcs.Task || !await sepetTcs.Task)
+        {
+            return new SplitPaymentYanit(false, 0, "Sepet cihaz tarafından onaylanmadı (type=1 status=0 timeout 30sn)");
+        }
+
+        // 2. Sırayla her ödemeyi gönder + ACK bekle.
+        int tamamlanan = 0;
+        foreach (var p in istek.Payments)
+        {
+            var odemeTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _odemeAckBekleyenler[istek.BasketID] = odemeTcs;
+            var payJson = JsonConvert.SerializeObject(new { basketID = istek.BasketID, type = p.Type, amount = p.Amount });
+            try { _com.sendPayment(payJson); }
+            catch (Exception ex)
+            {
+                _odemeAckBekleyenler.TryRemove(istek.BasketID, out _);
+                return new SplitPaymentYanit(false, tamamlanan, $"sendPayment istisna: {ex.Message}");
+            }
+            var odemeAck = await Task.WhenAny(odemeTcs.Task, Task.Delay(30_000, ct));
+            _odemeAckBekleyenler.TryRemove(istek.BasketID, out _);
+            if (odemeAck != odemeTcs.Task || !await odemeTcs.Task)
+            {
+                return new SplitPaymentYanit(false, tamamlanan, $"Ödeme {tamamlanan + 1}/{istek.Payments.Length} onaylanmadı (type=10 timeout veya red)");
+            }
+            tamamlanan++;
+        }
+        return new SplitPaymentYanit(true, tamamlanan, null);
     }
 
     public Task<BasitBasariYanit> ReConnectAsync(CancellationToken ct)
@@ -512,12 +619,13 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
         };
     }
 
+    // Portal enum (developer.tokeninc.com) — type 4 TANIMSIZ. Yemek kartı = 7.
+    // 2026-08-31 portal audit G5 fix: fake type=4 label kaldırıldı.
     private static string OdemeAciklamasi(int type) => type switch
     {
         1  => "NAKIT",
         2  => "KREDI KARTI",
         3  => "KREDI KARTI",
-        4  => "YEMEK KARTI",
         7  => "YEMEK KARTI",
         17 => "VERESIYE",
         _  => "DIGER",

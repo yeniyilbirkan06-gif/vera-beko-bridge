@@ -210,8 +210,12 @@ app.MapPost("/basket", async (BasketIstek sepet, IPosDevice cihaz, CancellationT
     return Results.Ok(y);
 });
 
-app.MapPost("/basket/cancel", async (IPosDevice cihaz, CancellationToken ct) =>
-    Results.Ok(await cihaz.CancelPendingBasketAsync(ct)));
+// G1 fix (2026-08-31) — cancel body opsiyonel `{basketID}` alır.
+// X30TR path'i `sendBasket({basketID, isVoid:true})` gerektirir, 300TR path'i
+// basketID'siz `sendPayment({isVoid:true})` ile çalışır. Body yoksa X30TR
+// iptal reddedilir; VERA basketID göndersin.
+app.MapPost("/basket/cancel", async (BasketCancelIstek? istek, IPosDevice cihaz, CancellationToken ct) =>
+    Results.Ok(await cihaz.CancelPendingBasketAsync(istek?.BasketID, ct)));
 
 // TokenX v2.0.1 reConnect() — kablo çekilip takıldığında SDK otomatik reconnect
 // eder ama garanti yok; VERA sağlık check "cihaz bağlı değil" gördüğünde çağırır.
@@ -220,6 +224,12 @@ app.MapPost("/reconnect", async (IPosDevice cihaz, CancellationToken ct) =>
 
 app.MapPost("/payment", async (PaymentIstek istek, IPosDevice cihaz, CancellationToken ct) =>
     Results.Ok(await cihaz.SendPaymentAsync(istek, ct)));
+
+// G2 (2026-08-31) — 300TR split-payment orchestration.
+// VERA aynı basketID ile önce /basket POST edip sonra buraya çağırıyor.
+// Bridge sırayla her ödemeyi gönderir + type=10 ACK bekler.
+app.MapPost("/payment/split", async (SplitPaymentIstek istek, IPosDevice cihaz, CancellationToken ct) =>
+    Results.Ok(await cihaz.SplitPaymentAsync(istek, ct)));
 
 app.MapGet("/devices", async (IPosDevice cihaz, CancellationToken ct) =>
     Results.Ok(await cihaz.ListDevicesAsync(ct)));
