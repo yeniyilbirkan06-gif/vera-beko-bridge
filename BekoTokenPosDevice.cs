@@ -240,14 +240,28 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
                 return Task.FromResult(new FiscalYanit(false));
             }
 
-            // FiscalInfo JSON: { sections: [{no,name,taxRate,...}], plus: [...],
+            // FiscalInfo JSON: { sections: [{sectionNo,name,taxPercent,...}], plus: [...],
             //                    receiptLimit, eDocumentStatus }
+            // Portal Wire envanter §fiscal-info: field adları "sectionNo" ve "taxPercent"
+            //   (KDV ×100 format, %10 = 1000). Cloud envanter §11 aynı.
+            // Eski (yanlış) parse "no" ve "taxRate" arıyordu → hep null → 0 → VERA cache
+            //   %0 gösteriyordu. Faz 6d KDV↔departman map fix bu cache'e dayandığı için
+            //   dinamik dispatch bozuluyordu (Faz 4 hardcoded map cache'i bypass ediyordu
+            //   ve sepet path yine çalıştığı için bug bugüne kadar teşhis edilmedi).
             var o = JObject.Parse(json);
             var sections = o["sections"] as JArray;
-            var kisimlar = sections?.Select(s => new KisimDto(
-                No:  (int?)s["no"] ?? 0,
-                Ad:  (string?)s["name"] ?? "?",
-                Kdv: (int?)s["taxRate"] ?? 0)).ToArray() ?? Array.Empty<KisimDto>();
+            var kisimlar = sections?.Select(s =>
+            {
+                // Field fallback: yeni portal spec (sectionNo/taxPercent) öncelik,
+                // eski name (no/taxRate) yedek. Eski cihaz firmware olasılığına karşı.
+                var sectionNo = (int?)s["sectionNo"] ?? (int?)s["no"] ?? 0;
+                var name      = (string?)s["name"] ?? "?";
+                var raw       = (int?)s["taxPercent"] ?? (int?)s["taxRate"] ?? 0;
+                // taxPercent = KDV ×100 (portal spec). taxRate eski cihazda raw olabilir;
+                // >= 100 ise ×100 formatı varsay, /100 yap. <100 ise raw yüzde kabul et.
+                var kdv       = raw >= 100 ? raw / 100 : raw;
+                return new KisimDto(No: sectionNo, Ad: name, Kdv: kdv);
+            }).ToArray() ?? Array.Empty<KisimDto>();
 
             var kdvOranlari = kisimlar.Select(k => k.Kdv).Distinct().OrderBy(x => x).ToArray();
 
@@ -303,10 +317,11 @@ public sealed class BekoTokenPosDevice : IPosDevice, IDisposable
             {
                 uyumsuzluk.Add($"section {onerilen.No}={onerilen.Ad} cihazda YOK");
             }
-            else if (m.Kdv != onerilen.Kdv * 100 && m.Kdv != onerilen.Kdv)
+            else if (m.Kdv != onerilen.Kdv)
             {
-                // Cihaz taxRate genelde ×100 (KDV %10 → 1000). VERA tarafında yüzde.
-                uyumsuzluk.Add($"section {onerilen.No}: cihaz KDV={m.Kdv}, VERA={onerilen.Kdv}%");
+                // RefreshFiscalInfoAsync artık Kdv'yi yüzde olarak normalize ediyor
+                // (raw ×100 formatını /100 yapıyor). Direkt karşılaştır.
+                uyumsuzluk.Add($"section {onerilen.No}: cihaz KDV=%{m.Kdv}, VERA=%{onerilen.Kdv}");
             }
         }
 
