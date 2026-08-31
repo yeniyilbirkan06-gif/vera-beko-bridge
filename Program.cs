@@ -22,6 +22,16 @@ Console.OutputEncoding = System.Text.Encoding.UTF8;
 var builder = WebApplication.CreateBuilder(args);
 
 /* ─── Konfigürasyon ─────────────────────────────────────────── */
+/* Faz 5 Sidecar (2026-09-01): Secret 3 kaynaktan okunabilir (ASP.NET Core
+ *   Configuration default sıralaması):
+ *   1. Environment Variable `Bridge__Secret` — VERA sidecar bunu enjekte eder
+ *      (Rust'ta Command::new_sidecar().env("Bridge__Secret", random)).
+ *      Task Manager'da CLI args'ta görünmez → güvenli (Gemini §5 önerisi).
+ *   2. CLI arg `--Bridge:Secret=xxx` — dev/debug için.
+ *   3. appsettings.json `{ "Bridge": { "Secret": "..." } }` — legacy standalone
+ *      kurulum için fallback (Faz 4 zip modeli).
+ * Faz 5 sonrası prod'da (1) esas, appsettings.json artık gizli olmayabilir
+ *   (installer secret üretip env var ile geçirir). */
 
 var portStr = builder.Configuration["Bridge:Port"] ?? "38701";
 var port    = int.TryParse(portStr, out var p) ? p : 38701;
@@ -35,9 +45,9 @@ if (string.IsNullOrWhiteSpace(secret))
     if (builder.Environment.IsProduction())
     {
         throw new InvalidOperationException(
-            "Bridge:Secret production'da ZORUNLU. appsettings.json içindeki 'Secret' " +
-            "alanına 32 karakter rastgele değer yazın. VERA installer bu değeri otomatik " +
-            "üretip hem VERA ayarlarına hem appsettings.json'a yazacak (Faz 5).");
+            "Bridge:Secret bulunamadı. VERA sidecar modunda Bridge__Secret env var " +
+            "ile enjekte eder (Faz 5). Standalone modda appsettings.json 'Secret' " +
+            "alanına 32 karakter rastgele değer yazın.");
     }
     Console.WriteLine("[bridge] UYARI: Bridge:Secret ayarlanmamış — DEV mode only.");
 }
